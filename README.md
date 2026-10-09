@@ -8,3 +8,4 @@ For more details make sure to read the wiki! https://github.com/JulienRogar/Loca
 Changelog: https://github.com/JulienRogar/Local-MotionTrail/wiki/Changelog
 
 ## How to use
+Requires Maya's default Python package
