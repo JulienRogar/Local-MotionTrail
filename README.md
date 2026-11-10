@@ -23,9 +23,11 @@ _Requires Maya's default Python package_
 -Paste bottom code in a Python tab inside Maya's script editor
 >import Local_MotionTrail\
 Local_MotionTrail.Load( multi_windows=True, keep_win_pref=False, expanded=True )
-<img width="631" height="327" alt="Script inside Script editor UI" src="https://github.com/user-attachments/assets/6af22717-35f3-49d3-8f91-971247412ae5" />
 
-
+<img width="631" height="327" alt="Script inside Script editor UI" src="https://github.com/user-attachments/assets/6af22717-35f3-49d3-8f91-971247412ae5" />\
+_Maya's script editor_
+\
+\
 -Select all the code and press the excecute button or drag and drop it on the shelf to set it as a shelf button to create a new instance/window at each press
 \
 \
