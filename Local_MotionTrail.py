@@ -2605,21 +2605,21 @@ def Clear_Element( self, self_idx:int, element_idx:int, skip_warning=False, part
             cmds.warning( f"[INFO]: Element already cleared!", noContext=True )
 
 def Delete_System( self, self_idx:int, partial_empty=None ): #Delete system
-        """
-        Delete system\n
-        ### Parameters:\n
-        'self' (None/Local_MotionTrail_Window): class object. If None, autofilled with the help of 'self_idx'\n
-        'self_idx' (int): class object index in global_win_instances\n
-        'partial_empty' (bool): (To ignore) Extra 'False' argument from partial() when function call includes argument(s)
-        """
-        if self is None:
-            self = _Get_Instance( self_idx )
-        
-        if self.ui_data['system'] is None or not cmds.objExists( self.ui_data['system'] ):
-            cmds.error( f"[ISSUE]: Can't find system '{self.ui_data['system']}'!", noContext=True )
-        
-        cmds.delete( self.ui_data['system'] )
-        _Switch_MainBttn( self, 1 )
+    """
+    Delete system\n
+    ### Parameters:\n
+    'self' (None/Local_MotionTrail_Window): class object. If None, autofilled with the help of 'self_idx'\n
+    'self_idx' (int): class object index in global_win_instances\n
+    'partial_empty' (bool): (To ignore) Extra 'False' argument from partial() when function call includes argument(s)
+    """
+    if self is None:
+        self = _Get_Instance( self_idx )
+    
+    if self.ui_data['system'] is None or not cmds.objExists( self.ui_data['system'] ):
+        cmds.error( f"[ISSUE]: Can't find system '{self.ui_data['system']}'!", noContext=True )
+    
+    cmds.delete( self.ui_data['system'] )
+    _Switch_MainBttn( self, 1 )
 
 def Close( self_idx:int ): #Close a specific instance and it's window
     """
