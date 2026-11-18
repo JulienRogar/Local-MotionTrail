@@ -1,7 +1,7 @@
 # Local MotionTrail
 Maya tool to create motion trails local from a camera and tracking from it's point of view
 
-Last version: 1.0.0 - tested in Maya 2024-2026
+Last version: 1.0.1 - tested in Maya 2024-2026
 
 For more details make sure to read the wiki! https://github.com/JulienRogar/Local-MotionTrail/wiki
 
