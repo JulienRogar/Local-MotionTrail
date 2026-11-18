@@ -2,9 +2,11 @@ import decimal as deci
 from functools import partial
 import maya.cmds as cmds #type: ignore
 import maya.mel as mel #type: ignore
+import maya.api.OpenMaya as om #type: ignore
+import maya.api.OpenMayaUI as omui #type: ignore
 
 # Local MotionTrail
-# Maya 2024-2026+ | 1.0.0
+# Maya 2024-2026+ | 1.0.1
 # Julien Rogar ( https://github.com/JulienRogar/Local-MotionTrail )
 
 
@@ -28,7 +30,7 @@ class Local_MotionTrail_Window():
         self.SELF_IDX = _Get_WindowIdx( self, multi_windows )
         SELF_IDX = self.SELF_IDX
         self.WIN_NAME = f"Local_MotionTrail_{SELF_IDX}"
-        self.WIN_TITLE = f"Local MotionTrail - 1.0.0 - [Maya 2024+]"
+        self.WIN_TITLE = f"Local MotionTrail - 1.0.1 - [Maya 2024+]"
         self.WIN_SIZE_SETS = ( (810,423), (260,280) )
         self.WIN_SIZE_WH = self.WIN_SIZE_SETS[0] if expanded else self.WIN_SIZE_SETS[1]
         self.WIN_SIZEABLE = True
@@ -59,7 +61,7 @@ class Local_MotionTrail_Window():
         self.ui_data = {
             'system':None, 'rebuild':True, 'scale_fix':False,
             'camera':None, 'range':"Slider", 'cstm_range':(deci.Decimal('1.0'), deci.Decimal('100.0')),
-            'step':deci.Decimal('1.0'), 'pool':0, 'aim_dist':deci.Decimal('0.5'), 'aim_zero_obj':None, 'aimmtx':None,
+            'step':deci.Decimal('1.0'), 'pool':0, 'aim_dist':deci.Decimal('0.5'), 'aim_zero_obj':None, 'aimmtx':None, 'inview_only':False,
             'target_color':(0.2, 1.0, 0.0), 'target_select':"Selectable", 'target_size':deci.Decimal('1.0'), 'target_display':True, 'target_obj':None,
             'cross_color':(1.0, 1.0, 0.0), 'cross_select':"Selectable", 'cross_size':deci.Decimal('0.5'), 'cross_calcul':True, 'cross_display':True, 'cross_grp':None, 'cross_obj':None,
             'trail_color':(1.0, 0.0, 0.0), 'trail_select':"Selectable", 'trail_calcul':True, 'trail_display':True, 'trail_grp':None, 'trail_obj':None
@@ -1496,6 +1498,19 @@ def _Calculate_All_Callback( self_idx:int,    drgCllBck_drgCtrl=None, drgCllBck_
         Calculate_All()
     elif drgCllBck_mod == 3:
         Calculate_All( (self_idx,) )
+
+def _Get_InView( active_view, mpoint, pos:tuple ): #Get if world position is in view
+    """
+    Get if world position is in view\n
+    ### Parameters:\n
+    'active_view' (maya.api.OpenMayaUI.M3dView): Target M3dView\n
+    'mpoint' (maya.api.OpenMaya.MPoint): Target MPoint\n
+    'pos' (tuple): World position (x, y, z)\n
+    ### Return:\n
+    (bool) True if is in view else False
+    """
+    mpoint.x, mpoint.y, mpoint.z = pos
+    return active_view.worldToView( mpoint )[2]
 #endregion - * UI/Features *
 
 #region - * Window *
@@ -2334,16 +2349,43 @@ def Calculate( self, self_idx:int, partial_empty=None ): #Calculate motion trail
     last_cross_pos = None
     last_cross = None
     last_cross_shape = None
-    no_cross_idx = None if self.ui_data['cross_calcul'] else 0
     tangent_in = "stepnext"
     tangent_out = "step"
     cross_attr = ( 'translate', 'scale', 'visibility' ) if do_scale_fix else ( 'translate', 'visibility' )
     trail_attr = ( 'translate', 'rotate', 'scaleZ', 'visibility' )
     do_pool = False if self.ui_data['pool'] == 0 else True
     pool_idx = 0 if do_pool else None
+    pool_idx_max = self.ui_data['pool'] - 1 if do_pool else None
+    pool_single = False
     pool_suffixes = []
     pool_complete = False
+    no_cross_idx = None if self.ui_data['cross_calcul'] else 0
     cross_no_calcul_pool = None
+    pool_was_on = True
+
+    #Inview only setup
+    inview_only = self.ui_data['inview_only']
+    omui_active_view = None
+    om_mpoint = None
+    if inview_only:
+        omui_active_view = omui.M3dView().active3dView()
+        active_camera = str(omui_active_view.getCamera())
+        #Get the transform above camera shape
+        active_camera_trnsf = cmds.listRelatives( active_camera, parent=True )
+        
+        if active_camera_trnsf is not None:
+            active_camera_trnsf = active_camera_trnsf[0]
+            #If active panel's camera match system's camera, setup inview_only else disable it
+            if active_camera_trnsf == self.ui_data['camera']:
+                om_mpoint = om.MPoint()
+            else:
+                print( f"[INFO]: Active panel's camera isn't '{self.ui_data['camera']}' but '{active_camera_trnsf}', In view only disabled for the calcul" )
+                inview_only = False
+                omui_active_view = None
+        else:
+            print( f"[ISSUE]: Couldn't find the transform of active panel's camera ( '{active_camera}' ), In view only disabled for the calcul" )
+            inview_only = False
+            omui_active_view = None
 
     #Enable aim matrix
     cmds.setAttr( f"{self.ui_data['aimmtx']}.enable", 1 )
@@ -2377,12 +2419,51 @@ def Calculate( self, self_idx:int, partial_empty=None ): #Calculate motion trail
                 cmds.setAttr( f'{child}.visibility', 0 )
                 if do_pool:
                     cmds.setKeyframe( child, time=pre_frame, respectKeyable=True, inTangentType=tangent_in, outTangentType=tangent_out )
-    #Prepare first-index trail pool item
-    if do_pool and self.ui_data['trail_calcul']:
-        c_trail = f"{trail_name}{f'{c_frame}'.replace('-','n',1).replace('.','_',1)}"
-        if not cmds.objExists( c_trail ):
-            c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=c_trail )
-        cmds.setKeyframe( c_trail, time=pre_frame, attribute='visibility', value=0, respectKeyable=True, inTangentType=tangent_in, outTangentType=tangent_out )
+    #Prepare pool items
+    if do_pool:
+        t_trail = None
+        #Prepare first-index trail pool item
+        if self.ui_data['trail_calcul']:
+            t_trail = f"{trail_name}{f'{c_frame}'.replace('-','n',1).replace('.','_',1)}"
+            if not cmds.objExists( t_trail ):
+                t_trail = cmds.duplicate( self.ui_data['trail_obj'], name=t_trail )[0]
+            cmds.setKeyframe( t_trail, time=pre_frame, attribute='visibility', value=0, respectKeyable=True, inTangentType=tangent_in, outTangentType=tangent_out )
+        
+        #Prepare pool length at one with crosses
+        if self.ui_data['cross_calcul'] and pool_idx_max == 0:
+                t_frame = f'{c_frame}'.replace('-','n',1).replace('.','_',1)
+
+                t_cross = f"{cross_name}{t_frame}"
+                if self.ui_data['rebuild'] or not cmds.objExists( t_cross ):
+                    #If first cross has to be rebuilt or doesn't exist already, create it
+                    t_cross = cmds.duplicate( self.ui_data['cross_obj'], name=t_cross )[0]
+                cmds.setKeyframe( t_cross, time=pre_frame, attribute=cross_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                pool_suffixes.append( t_cross )
+                pool_suffixes.append( None ) #Emtpy index for second cross
+
+                #If do trail, add the trail to the list and prepare first cross to trail system
+                if self.ui_data['trail_calcul']:
+                    pool_suffixes.append( t_trail )
+                    cmds.setKeyframe( t_trail, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+
+                    c_cross_shape = cmds.listRelatives( t_cross, children=True, shapes=True )[0]
+                    cmds.connectAttr( f'{c_cross_shape}.worldPosition[0]', f'{dis_dim}.endPoint', force=True )
+                
+                #Create temporary second cross
+                t_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{t_frame}e" )[0]
+                cmds.setAttr( f'{t_cross}.visibility', 1 )
+                
+                #If do trail, prepare second cross to trail system
+                if self.ui_data['trail_calcul']:
+                    cmds.connectAttr( f'{t_cross}.worldMatrix[0]', f'{trail_aimmtx}.primaryTargetMatrix', force=True )
+                    c_cross_shape = cmds.listRelatives( t_cross, children=True, shapes=True )[0]
+                    cmds.connectAttr( f'{c_cross_shape}.worldPosition[0]', f'{dis_dim}.startPoint', force=True )
+                
+                pool_suffixes[1] = t_cross
+                pool_suffixes = tuple(pool_suffixes)
+                pool_single = True
+                pool_complete = True
+
     #Prepare non-calcul crosses if needed
     if not self.ui_data['cross_calcul']:
         cross_start = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}s" )[0]
@@ -2409,96 +2490,163 @@ def Calculate( self, self_idx:int, partial_empty=None ): #Calculate motion trail
     cmds.progressWindow( title="Local MotionTrail", status="Calculating...    <font color=darkorange>(Hold Esc to cancel)</font color>", isInterruptable=True, minValue=0, maxValue=progress_range, progress=0 )
 
     #Calculate
+    c_frame_suffix = None
+    c_cross = None
+    c_trail = None
+    target_pool_idx = None
     while (step_positive and c_frame < calcul_range[1]) or (not step_positive and c_frame > calcul_range[1]):
         cmds.currentTime( c_frame, update=True )
         #Current position
         c_pos = cmds.getAttr( aim_pos )
         c_pos = ( c_pos[12], c_pos[13], c_pos[14] )
+        c_frame_suffix = None
+        c_cross = None
+        c_trail = None
         if c_pos != last_pos: #If no superposition
-            c_frame_suffix = f'{c_frame}'.replace('-','n',1).replace('.','_',1) if not do_pool or not pool_complete else pool_suffixes[pool_idx]
-            
-            #Cross
-            if self.ui_data['cross_calcul']:
-                if do_pool: #Pool
-                    if self.ui_data['rebuild'] and not pool_complete: #-1 Pool not complete, duplicate new element
-                        c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{c_frame_suffix}" )[0]
-                        cmds.setKeyframe( c_cross, time=pre_frame, attribute=cross_attr, inTangentType=tangent_in, outTangentType=tangent_out )
-                    else: #-1 Recycle pool
-                        c_cross = f"{cross_name}{c_frame_suffix}"
-                else: #Not pool
-                    if self.ui_data['rebuild']: #-2 Rebuild all
-                        c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{c_frame_suffix}" )[0]
-                    else: #-2 Recycle
-                        c_cross = f"{cross_name}{c_frame_suffix}"
-                        if not cmds.objExists( c_cross ): #-3 Out of already built
-                            c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{c_frame_suffix}" )[0]
-                cmds.setAttr( f'{c_cross}.visibility', 1 )
-            else: #No calcul cross
-                c_cross = cross_no_calcul_pool[no_cross_idx]
-                no_cross_idx = 0 if no_cross_idx else 1
-            cmds.matchTransform( c_cross, self.ui_data['aim_zero_obj'], position=True, rotation=False, scale=False )
-            c_cross_pos = cmds.getAttr( f'{c_cross}.translate' )[0]
-            if do_scale_fix: #Scale fix on c_cross
-                l_scale = cmds.getAttr( sys_scfmtx_out )[0]
-                l_scale = ( 1.0 / l_scale[0], 1.0 / l_scale[1], 1.0 / l_scale[2] )
-                cmds.setAttr( f'{c_cross}.scale', l_scale[0], l_scale[1], l_scale[2] )
-        
-            #Trail
-            if not_first_frame and self.ui_data['trail_calcul']:
-                if do_pool: #Pool
-                    if self.ui_data['rebuild'] and not pool_complete: #-1 Pool not complete, duplicate new element
-                        c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=f"{trail_name}{c_frame_suffix}" )[0]
-                        cmds.setKeyframe( c_trail, time=pre_frame, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
-                    else: #-1 Recycle pool
-                        c_trail = f"{trail_name}{c_frame_suffix}"
-                else: #No pool
-                    if self.ui_data['rebuild']: #-1 Rebuild all
-                        c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=f"{trail_name}{c_frame_suffix}" )[0]
-                    else: #-2 Recycle
-                        c_trail = f"{trail_name}{c_frame_suffix}"
-                        if not cmds.objExists( c_trail ): #-3 Out of already built
-                            c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=f"{trail_name}{c_frame_suffix}" )[0]
-                cmds.setAttr( f'{c_trail}.visibility', 1 )
-                #Position
-                target_value = ( (last_cross_pos[0] + c_cross_pos[0]) *0.5, (last_cross_pos[1] + c_cross_pos[1]) *0.5, (last_cross_pos[2] + c_cross_pos[2]) *0.5 )
-                cmds.setAttr( f'{c_trail}.translate', target_value[0], target_value[1], target_value[2] )
-
-                #Rotation
-                cmds.connectAttr( f'{last_cross}.worldMatrix[0]', f'{trail_aimmtx}.primaryTargetMatrix', force=True )
-                cmds.matchTransform( c_trail, trail_aim_ref, position=False, rotation=True, scale=False )
-
-                #Scale
-                c_cross_shape = cmds.listRelatives( c_cross, children=True, shapes=True )[0]
-                cmds.connectAttr( f'{last_cross_shape}.worldPosition[0]', f'{dis_dim}.startPoint', force=True )
-                cmds.connectAttr( f'{c_cross_shape}.worldPosition[0]', f'{dis_dim}.endPoint', force=True )
-                target_value = cmds.getAttr( f'{dis_dim}.distance' ) * 0.5
-                cmds.setAttr( f'{c_trail}.scaleZ', target_value )
-                last_cross_shape = c_cross_shape
-            if do_pool: #Keyframe new values on current pool element(s)
+            if target_pool_idx is not None: #Reset back index of pool to hide by step while superposed c_pos
+                target_pool_idx = None
+            if not inview_only or (inview_only and _Get_InView( omui_active_view, om_mpoint, c_pos )): #If using inview_only and is in view
+                c_frame_suffix = f'{c_frame}'.replace('-','n',1).replace('.','_',1) if not do_pool or not pool_complete else pool_suffixes[pool_idx]
+                
+                #Cross
                 if self.ui_data['cross_calcul']:
+                    if do_pool: #Pool
+                        if pool_single:
+                            c_cross = pool_suffixes[0]
+                            cmds.matchTransform( pool_suffixes[1], c_cross, position=True, rotation=False, scale=False )
+                        else:
+                            c_cross = f"{cross_name}{c_frame_suffix}"
+                            if not pool_complete and (self.ui_data['rebuild'] or not cmds.objExists( c_cross )):#-1 Pool not complete, duplicate new element
+                                c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=c_cross )[0]
+                                cmds.setKeyframe( c_cross, time=pre_frame, attribute=cross_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                            #-2 Else recycle
+                    else: #Not pool
+                        if self.ui_data['rebuild']: #-2 Rebuild all
+                            c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{c_frame_suffix}" )[0]
+                        else: #-2 Recycle
+                            c_cross = f"{cross_name}{c_frame_suffix}"
+                            if not cmds.objExists( c_cross ): #-3 Out of already built
+                                c_cross = cmds.duplicate( self.ui_data['cross_obj'], name=f"{cross_name}{c_frame_suffix}" )[0]
+                    cmds.setAttr( f'{c_cross}.visibility', 1 )
+                else: #No calcul cross
+                    c_cross = cross_no_calcul_pool[no_cross_idx]
+                    no_cross_idx = 0 if no_cross_idx else 1
+                
+                cmds.matchTransform( c_cross, self.ui_data['aim_zero_obj'], position=True, rotation=False, scale=False )
+                c_cross_pos = cmds.getAttr( f'{c_cross}.translate' )[0]
+                if do_scale_fix: #Scale fix on c_cross
+                    l_scale = cmds.getAttr( sys_scfmtx_out )[0]
+                    l_scale = ( 1.0 / l_scale[0], 1.0 / l_scale[1], 1.0 / l_scale[2] )
+                    cmds.setAttr( f'{c_cross}.scale', l_scale[0], l_scale[1], l_scale[2] )
+                if do_pool: #Keyframe new values on current pool element(s)
                     cmds.setKeyframe( c_cross, attribute=cross_attr, inTangentType=tangent_in, outTangentType=tangent_out )
-                if self.ui_data['trail_calcul'] and not_first_frame:
-                    cmds.setKeyframe( c_trail, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
-            last_pos = c_pos
-            last_cross_pos = c_cross_pos
-            last_cross = c_cross
-        
+                
+
+                #Trail
+                if not_first_frame and self.ui_data['trail_calcul']:
+                    if do_pool: #Pool
+                        if pool_single:
+                            c_trail = pool_suffixes[2]
+                            last_cross = pool_suffixes[1]
+                        else:
+                            c_trail = f"{trail_name}{c_frame_suffix}"
+                            if not pool_complete and (self.ui_data['rebuild'] or not cmds.objExists( c_trail )): #-1 Pool not complete, duplicate new element
+                                c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=c_trail )[0]
+                                cmds.setKeyframe( c_trail, time=pre_frame, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                            #-2 Else recycle
+                    else: #No pool
+                        if self.ui_data['rebuild']: #-1 Rebuild all
+                            c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=f"{trail_name}{c_frame_suffix}" )[0]
+                        else: #-2 Recycle
+                            c_trail = f"{trail_name}{c_frame_suffix}"
+                            if not cmds.objExists( c_trail ): #-3 Out of already built
+                                c_trail = cmds.duplicate( self.ui_data['trail_obj'], name=f"{trail_name}{c_frame_suffix}" )[0]
+                    cmds.setAttr( f'{c_trail}.visibility', 1 )
+                    #Position
+                    target_value = ( (last_cross_pos[0] + c_cross_pos[0]) *0.5, (last_cross_pos[1] + c_cross_pos[1]) *0.5, (last_cross_pos[2] + c_cross_pos[2]) *0.5 )
+                    cmds.setAttr( f'{c_trail}.translate', target_value[0], target_value[1], target_value[2] )
+
+                    #Rotation
+                    if not pool_single and last_cross != c_cross:
+                        cmds.connectAttr( f'{last_cross}.worldMatrix[0]', f'{trail_aimmtx}.primaryTargetMatrix', force=True )
+                    cmds.matchTransform( c_trail, trail_aim_ref, position=False, rotation=True, scale=False )
+
+                    #Scale
+                    c_cross_shape = cmds.listRelatives( c_cross, children=True, shapes=True )[0]
+                    if not pool_single and last_cross_shape != c_cross_shape:
+                        cmds.connectAttr( f'{last_cross_shape}.worldPosition[0]', f'{dis_dim}.startPoint', force=True )
+                        cmds.connectAttr( f'{c_cross_shape}.worldPosition[0]', f'{dis_dim}.endPoint', force=True )
+                    target_value = cmds.getAttr( f'{dis_dim}.distance' ) * 0.5
+                    cmds.setAttr( f'{c_trail}.scaleZ', target_value )
+                    
+                    last_cross_shape = c_cross_shape
+                    if do_pool: #Keyframe new values on current pool element(s)
+                        cmds.setKeyframe( c_trail, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                last_pos = c_pos
+                last_cross_pos = c_cross_pos
+                last_cross = c_cross
+                pool_was_on = True
+                
+                if not not_first_frame:
+                    not_first_frame = True
+                    last_cross_shape = cmds.listRelatives( c_cross, children=True, shapes=True )[0]
+        elif do_pool: #Hide by step pool elements
+            if pool_single:
+                if pool_was_on: #Last frame wasn't a superposition of c_pos, hide single trail on this frame
+                    pool_was_on = False
+                    if self.ui_data['trail_calcul']:
+                        cmds.setAttr( f'{pool_suffixes[2]}.visibility', 0 )
+                        cmds.setKeyframe( pool_suffixes[2], attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+            else:
+                if pool_was_on:
+                    target_pool_idx = pool_idx
+                    pool_was_on = False
+                else:
+                    target_pool_idx += 1
+                if target_pool_idx > pool_idx_max: #Over end of pool, loop back at start index 0
+                    target_pool_idx = 0
+                
+                old_idx = pool_idx - 1
+                if old_idx < 0: #Loop back at end of pool's index
+                    old_idx = pool_idx_max
+                
+                c_frame_suffix = f'{c_frame}'.replace('-','n',1).replace('.','_',1) if not do_pool or not pool_complete else pool_suffixes[target_pool_idx]
+                
+                if self.ui_data['cross_calcul'] and target_pool_idx != old_idx:
+                    c_cross = f"{cross_name}{c_frame_suffix}"
+                    if cmds.objExists( c_cross ):
+                        cmds.setAttr( f'{c_cross}.visibility', 0 )
+                        cmds.setKeyframe( c_cross, attribute=cross_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                
+                if not_first_frame and self.ui_data['trail_calcul']:
+                    c_trail = f"{trail_name}{c_frame_suffix}"
+                    if cmds.objExists( c_trail ):
+                        cmds.setAttr( f'{c_trail}.visibility', 0 )
+                        cmds.setKeyframe( c_trail, attribute=trail_attr, inTangentType=tangent_in, outTangentType=tangent_out )
+                #Reset back c_cross and c_trail to prevent incrementing pool_idx below
+                c_cross = None
+                c_trail = None
+
         #To next loop
+        # Next timeline frame
         if frame_as_int:
             c_frame+=step
         else:
             c_frame = float( deci.Decimal(f'{c_frame}') + step )
-        if do_pool:
+        # Next pool idx
+        if do_pool and (c_cross is not None or c_trail is not None):
             if not pool_complete:
                 pool_suffixes.append( c_frame_suffix )
-            if pool_idx < self.ui_data['pool']:
+                
+                if pool_idx == pool_idx_max: #If now complete
+                    pool_suffixes = tuple(pool_suffixes)
+                    pool_complete = True
+            
+            if pool_idx < pool_idx_max:
                 pool_idx+=1
             else:
                 pool_idx = 0
-                pool_complete = True
-        if not not_first_frame:
-            not_first_frame = True
-            last_cross_shape = cmds.listRelatives( c_cross, children=True, shapes=True )[0]
+        # Next step on progressWindow
         cmds.progressWindow( edit=True, step=progress_step )
         if cmds.progressWindow( query=True, isCancelled=True ): #Check cancel call
             do_cancel=True
@@ -2518,6 +2666,9 @@ def Calculate( self, self_idx:int, partial_empty=None ): #Calculate motion trail
     #If non-calcul crosses, remove them
     if not self.ui_data['cross_calcul']:
         cmds.delete( cross_no_calcul_pool )
+    #If pool single length, remove temporary second cross
+    if do_pool and pool_single:
+        cmds.delete( pool_suffixes[1] )
     
     #Progress window
     cmds.progressWindow( endProgress=True )
@@ -2602,7 +2753,8 @@ def Clear_Element( self, self_idx:int, element_idx:int, skip_warning=False, part
         if children != []:
             cmds.delete( children )
         elif not skip_warning:
-            cmds.warning( f"[INFO]: Element already cleared!", noContext=True )
+            cmds.inViewMessage( message="<font color=darkorange>Element already cleared!</font color>", position="botCenter", fade=True, fadeOutTime=300 )
+            print( f"[INFO]: Element already cleared!" )
 
 def Delete_System( self, self_idx:int, partial_empty=None ): #Delete system
     """
@@ -2620,6 +2772,18 @@ def Delete_System( self, self_idx:int, partial_empty=None ): #Delete system
     
     cmds.delete( self.ui_data['system'] )
     _Switch_MainBttn( self, 1 )
+
+def InView( self_idx:int, state:bool ): #Set in view only value for system (Experimental)
+    """
+    Set in view only value for system (Experimental)\n
+    ### Parameters:\n
+    'self_idx' (int): class object index in global_win_instances\n
+    'state' (bool): Attribute value
+    """
+    self = _Get_Instance( self_idx )
+    
+    self.ui_data['inview_only'] = state
+    print( f"[INFO]: In view only set to {state} for '{self.ui_data['system']}'" )
 
 def Close( self_idx:int ): #Close a specific instance and it's window
     """
